@@ -460,7 +460,12 @@ inline void Edit(Factory& f, const std::vector<std::string>& a) {
         for(int i=0;i<times;++i) f.Rotate(id,steps);
     }
     else if (a[0] == "翻" || a[0] == "翻转") { count(2,2); f.Flip(Component(f,a[1])); }
-    else if (a[0] == "拆" || a[0] == "拆除" || a[0] == "移除" || a[0] == "删" || a[0] == "删除") { count(2,2); f.Remove(Component(f,a[1])); }
+    else if (a[0] == "拆" || a[0] == "拆除" || a[0] == "移除" || a[0] == "删" || a[0] == "删除") {
+        count(2,65);
+        std::set<int> ids;
+        for(size_t i=1;i<a.size();++i) { const int id=Component(f,a[i]); f.Editable(f.Get(id)); ids.insert(id); }
+        for(int id:ids) f.Remove(id);
+    }
     else if (a[0] == "重置") { count(1,1); f.pieces = f.baseline; }
     else throw std::runtime_error("未知施工指令，请发送 操作");
 }

@@ -24,9 +24,11 @@ GAME_TEST(1, insufficient_players) { ASSERT_FALSE(StartGame()); }
 GAME_TEST(7, too_many_players) { ASSERT_FALSE(StartGame()); }
 GAME_TEST(6, each_player_picture_commands) {
     START_GAME();
+    ASSERT_PUB_MSG(OK,0,"赛况");
     for (int i=0; i<6; ++i) ASSERT_PRI_MSG(OK,i,"工厂");
-    ASSERT_TIMEOUT(CHECKOUT); ASSERT_PUB_MSG(OK,0,"牌池");
+    ASSERT_TIMEOUT(CHECKOUT); ASSERT_PUB_MSG(OK,0,"牌池"); ASSERT_PUB_MSG(OK,0,"赛况");
     ASSERT_TIMEOUT(CHECKOUT);
+    ASSERT_PUB_MSG(OK,0,"赛况");
     for (int i=0; i<6; ++i) {
         ASSERT_PRI_MSG(OK,i,"工厂");
         ASSERT_PRI_MSG(OK,i,"机器 41");

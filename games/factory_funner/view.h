@@ -17,9 +17,9 @@ inline const std::string kHelp =
     "批量施工：方案 机 C4; 自动（一条消息整体执行，可一次撤销）\n\n"
     "旋转：旋转 C3（顺时针60度）；旋转 C3 3（连续三次）；旋转 C3 逆时针 2；转 编号。管道遇冲突时继续尝试后续角度；没有其他合法朝向则保持原位。\n\n"
     "翻转：翻转 C3 或 翻 编号（仅管道）；原地翻转冲突时自动旋转寻找合法朝向。\n\n"
-    "拆除：拆、拆除、移除、删、删除均支持；如 删除 16、拆 #16 或 拆 C3。交叉管道需按编号指定部件，标签颜色与管道对应。移动 C3 D3 或 移 组件编号 坐标。放置和移动遇占用时自动拆除冲突组件；本轮机器、同色供应罐重复放置会移动已有组件。往轮机器固定。\n\n"
+    "拆除：拆、拆除、移除、删、删除均支持；如 删除 16、拆 #16、拆 C3 或 拆 8 9 10 11 12 13。可一次拆多个部件，整条操作一次撤销；任一部件不能拆时全部不生效。交叉管道需按编号指定部件，标签颜色与管道对应。移动 C3 D3 或 移 组件编号 坐标。放置和移动遇占用时自动拆除冲突组件；本轮机器、同色供应罐重复放置会移动已有组件。往轮机器固定。\n\n"
     "撤销；重做；重置（恢复本轮开始布局）。修改仅在施工阶段且尚未提交时允许。\n\n"
-    "随时查询：工厂（自己的图）；文字（文字棋盘和组件）；检查；机器 41；牌池；赛况；操作\n\n"
+    "随时查询：工厂（自己的详情图）；文字（文字棋盘和组件）；检查；机器 41；牌池；赛况（抢选阶段补牌池图，其他阶段补工厂总览，施工草稿不公开）；操作\n\n"
     "施工完成：提交 或 跳过；提交后锁定，全部完成才统一记账\n\n"
     "超时确认阶段：保留（保留冻结的有效草稿）或 跳过\n\n"
     "坐标：A–G 为列，1–7 为行；偶数行向左错半格。\n\n"
@@ -80,10 +80,46 @@ inline std::string AssetUri(const std::string& dir, const std::string& filename)
 inline std::string MachineImageName(int id) {
     return "Toke_Factory_Funner_Machine_Tiles_" + std::string(id < 10 ? "0" : "") + std::to_string(id) + "_a0s0.png";
 }
+inline std::map<int,int> PipeLiquidColors(const Factory& factory) {
+    struct Node { const Piece* piece; Port port; };
+    std::vector<Node> nodes; std::vector<int> parent;
+    std::map<std::pair<Cell,int>,int> ends;
+    std::function<int(int)> root=[&](int i) { return parent[i]==i?i:parent[i]=root(parent[i]); };
+    auto join=[&](int a,int b) { parent[root(a)]=root(b); };
+    for(const auto& piece:factory.pieces) {
+        const int first=nodes.size();
+        for(const auto port:Ports(piece)) {
+            const int i=nodes.size(); nodes.push_back({&piece,port}); parent.push_back(i);
+            ends.emplace(std::make_pair(piece.cell,port.edge),i);
+            if(piece.kind!=Kind::Machine && i!=first) join(first,i);
+        }
+    }
+    for(int i=0;i<int(nodes.size());++i) {
+        const auto& n=nodes[i]; auto other=ends.find({Neighbor(n.piece->cell,n.port.edge),Mod(n.port.edge+3)});
+        if(other!=ends.end() && !(n.port.kind==PortKind::Source && nodes[other->second].port.kind==PortKind::Source)) join(i,other->second);
+    }
+    std::map<int,int> networks, result;
+    for(int i=0;i<int(nodes.size());++i) {
+        auto [it,inserted]=networks.try_emplace(root(i),31);
+        if(nodes[i].port.colors) it->second &= nodes[i].port.colors;
+    }
+    for(int i=0;i<int(nodes.size());++i) if(nodes[i].piece->kind==Kind::Pipe) {
+        const int colors=networks.at(root(i));
+        result[nodes[i].piece->id]=std::popcount(unsigned(colors))==1?colors:0;
+    }
+    return result;
+}
+inline const char* LiquidColor(int color) {
+    switch(color) {
+        case 1:return "#cc397d"; case 2:return "#edc83d"; case 4:return "#23865b";
+        case 8:return "#167da9"; case 16:return "#263942"; default:return "#85939d";
+    }
+}
 inline std::string FactoryHtml(const Factory& f, const std::string& resources = "games/factory_funner/resource", const std::string& player = "", bool compact = false, std::optional<BoardEstimate> estimate = std::nullopt) {
     // Qt WebKit supports SVG 1.1 xlink:href, including local artwork.
     std::ostringstream s;
     std::ostringstream labels;
+    const auto liquid_colors=PipeLiquidColors(f);
     s << "<div style=\"font-family:'Microsoft YaHei',sans-serif;background:#f4f1e6;padding:12px;width:" << (compact ? 600 : 965) << "px\">";
     s << "<h3>" << EscapeHtml(player) << " · 第" << f.round << "轮</h3>";
     auto figures=estimate.value_or(BoardEstimate{});
@@ -111,9 +147,11 @@ inline std::string FactoryHtml(const Factory& f, const std::string& resources = 
         if (!Playable(f.skin,cell)) continue;
         std::vector<const Piece*> occupants;
         for (const auto& p : f.pieces) if (p.cell == cell) occupants.push_back(&p);
-        const std::array<const char*,3> pipes = {"#2583b9","#c45492","#ac7814"};
+        const std::array<const char*,3> unknown_pipes = {"#85939d","#bec6cb","#65727e"};
         for (size_t i = 0; i < occupants.size(); ++i) {
             const auto& p = *occupants[i];
+            const int liquid=p.kind==Kind::Pipe?liquid_colors.at(p.id):0;
+            const char* pipe_color=liquid?LiquidColor(liquid):unknown_pipes[i%3];
             if (p.kind != Kind::Pipe) {
                 s << "<g transform=\"translate(" << x << " " << y << ")\">";
                 if (p.kind == Kind::Machine) {
@@ -131,11 +169,11 @@ inline std::string FactoryHtml(const Factory& f, const std::string& resources = 
                 if (p.kind == Kind::Pipe) {
                     // Thick outline makes independently crossing pipes visible.
                     s << "<line x1=\"" << x << "\" y1=\"" << y << "\" x2=\"" << x+67.5*dx << "\" y2=\"" << y+67.5*dy << "\" stroke=\"#243e3e\" stroke-width=\"18\"/>";
-                    s << "<line x1=\"" << x << "\" y1=\"" << y << "\" x2=\"" << x+67.5*dx << "\" y2=\"" << y+67.5*dy << "\" stroke=\"" << pipes[i%3] << "\" stroke-width=\"10\"/>";
+                    s << "<line x1=\"" << x << "\" y1=\"" << y << "\" x2=\"" << x+67.5*dx << "\" y2=\"" << y+67.5*dy << "\" stroke=\"" << pipe_color << "\" stroke-width=\"10\"/>";
                 }
             }
-            labels << "<rect x=\"" << x-38 << "\" y=\"" << y+12+int(i)*14 << "\" width=\"76\" height=\"14\" fill=\"" << (p.kind==Kind::Pipe?pipes[i%3]:"#fff9e8") << "\" stroke=\"white\" stroke-width=\"1\"/>";
-            labels << "<text x=\"" << x << "\" y=\"" << y+23+int(i)*14 << "\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"bold\" fill=\"" << (p.kind==Kind::Pipe?"white":"#182a3d") << "\">" << Label(p) << " #" << p.id << (p.kind == Kind::Machine && p.round < f.round ? " 固定" : "") << "</text>";
+            labels << "<rect x=\"" << x-38 << "\" y=\"" << y+12+int(i)*14 << "\" width=\"76\" height=\"14\" fill=\"" << (p.kind==Kind::Pipe?pipe_color:"#fff9e8") << "\" stroke=\"white\" stroke-width=\"1\"/>";
+            labels << "<text x=\"" << x << "\" y=\"" << y+23+int(i)*14 << "\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"bold\" fill=\"" << (p.kind==Kind::Pipe && liquid!=2 && (liquid || i%3!=1)?"white":"#182a3d") << "\">" << Label(p) << " #" << p.id << (p.kind == Kind::Machine && p.round < f.round ? " 固定" : "") << "</text>";
         }
     }
     // Draw coordinates last so rotated machines and tanks cannot hide them.

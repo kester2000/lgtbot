@@ -37,14 +37,22 @@ class MainStage : public StageFsm<void, RoundStage> {
         else { if(p.selection.first) name+=" · 首抢 -1 分"; if(p.selection.last) name+=" · 末位建成 +1 分"; }
         return name;
     }
-    Markdown OverviewPicture() const {
+    Markdown OverviewPicture(bool settled_only=false) const {
         std::vector<std::pair<std::string,ff::Factory>> factories;
         std::vector<ff::BoardEstimate> estimates;
         for (size_t i = 0; i < match.players.size(); ++i) {
             const auto& p = match.players[i];
             std::string name = Caption(i);
-            factories.emplace_back(std::move(name),p.draft.factory);
-            estimates.push_back(match.Estimate(i));
+            auto factory=p.draft.factory; auto estimate=match.Estimate(i);
+            if(settled_only) {
+                factory.pieces=factory.baseline;
+                estimate.current_chain=factory.Validate().bonus;
+                estimate.income=estimate.machine_revenue=estimate.parts_cost=estimate.new_chain=estimate.adjustment=0;
+                estimate.total=estimate.cash+estimate.current_chain;
+                estimate.status=p.left?"已退出":p.submitted?"已提交":p.decision?"等待超时确认":"施工中，草稿不公开";
+            }
+            factories.emplace_back(std::move(name),std::move(factory));
+            estimates.push_back(std::move(estimate));
         }
         return Markdown(ff::FactoriesHtml(factories,Global().ResourceDir(),estimates),1280);
     }
@@ -77,16 +85,18 @@ class RoundStage : public SubGameStage<> {
         }
         return "";
     }
+    bool AnnounceStageBegin() const override { return phase_ != ff::Phase::Select; }
     void OnStageBegin() override {
         auto& m = Main().match;
         if (phase_ == ff::Phase::Ready) {
             Global().StartTimer(10);
             Global().Boardcast() << "10 秒后自动翻牌，进入抢选阶段。发送 操作 查看指令。";
-            Global().Boardcast() << Main().OverviewPicture();
+            if (m.round == 1) Global().Boardcast() << Main().OverviewPicture();
         } else if (phase_ == ff::Phase::Select) {
             Global().StartTimer(GAME_OPTION(选机时限));
-            Global().Boardcast() << Market() << "\n发送 抢 序号 或 不抢；按机器人收到指令的先后判定。超时随机分配。";
-            Global().Boardcast() << Markdown(MarketHtml(),1000);
+            Global().Boardcast() << "【当前阶段】第" << m.round << "轮 · 抢选机器\n" << Market()
+                << "\n抢选时间 " << GAME_OPTION(选机时限) << " 秒。发送 抢 序号 或 不抢；按机器人收到指令的先后判定。最后一位自动领取剩余机器，超时随机分配。\n"
+                << Markdown(MarketHtml(),1000);
         } else if (phase_ == ff::Phase::Build) {
             Global().StartTimer(GAME_OPTION(施工时限));
             Global().Boardcast() << "选机完成，开始施工。可私聊发送施工指令；发送 工厂 查看图，文字 查看端口，检查 校验，提交 或 跳过 锁定。";
@@ -168,7 +178,12 @@ class RoundStage : public SubGameStage<> {
             const auto& cmd = a[0];
             auto count = [&](size_t n) { ff::Require(a.size() == n, "参数数量不正确，请发送 操作"); };
             if (cmd == "操作") { count(1); reply() << ff::kHelp; }
-            else if (cmd == "赛况") { count(1); reply() << Main().Scores(); }
+            else if (cmd == "赛况") {
+                count(1); auto message=reply();
+                message << "【当前阶段】第" << m.round << "轮 · " << PhaseName(phase_) << "\n" << Main().Scores();
+                if(phase_==ff::Phase::Select) message << Markdown(MarketHtml(),1000);
+                else message << Main().OverviewPicture(phase_==ff::Phase::Build || phase_==ff::Phase::Decision);
+            }
             else if (cmd == "牌池") { count(1); reply() << Market(); if (phase_ != ff::Phase::Ready) reply() << Markdown(MarketHtml(),1000); }
             else if (cmd == "工厂") { count(1); reply() << FactoryPicture(pid); }
             else if (cmd == "文字") { count(1); reply() << ff::FactoryText(p.draft.factory); }
@@ -217,10 +232,7 @@ void MainStage::NextStageFsm(RoundStage&, CheckoutReason, SubStageFsmSetter sett
     else if (match.phase == ff::Phase::Build && !match.All([](auto& p) { return p.submitted; })) setter.Emplace<RoundStage>(*this,ff::Phase::Decision);
     else {
         match.Commit(); Global().Boardcast() << "本轮统一结算：\n" << Scores();
-        for (size_t i = 0; i < match.players.size(); ++i) {
-            const auto picture = Markdown(ff::FactoryHtml(match.players[i].draft.factory,Global().ResourceDir(),Caption(i),false,match.Estimate(i)),1000);
-            Global().Boardcast() << picture;
-        }
+        Global().Boardcast() << OverviewPicture();
         if (match.round == 8) { match.phase = ff::Phase::Over; Global().Boardcast() << "八轮结束，按资金加连锁奖励排名，同分并列。"; }
         else { ++match.round; match.OpenRound(); setter.Emplace<RoundStage>(*this,ff::Phase::Ready); }
     }

@@ -128,8 +128,27 @@ static void Tests() {
     Factory cross; Add(cross,Kind::Pipe,{2,2},9); Add(cross,Kind::Pipe,{2,2},18); Add(cross,Kind::Pipe,{2,2},36);
     Check(cross.pieces.size() == 3,"three independent crossing pipes");
     const auto cross_picture=FactoryHtml(cross);
+    Draft multiple; multiple.factory=cross;
+    multiple.Apply(Words("拆 1 #2 3 3")); Check(multiple.factory.pieces.empty(),"multiple IDs removed including duplicates");
+    multiple.Apply(Words("撤销")); Check(multiple.factory.pieces==cross.pieces,"multiple removal undone together");
+    Throws([&] {multiple.Apply(Words("删除 1 99 2"));},"unknown ID rejects whole removal");
+    Check(multiple.factory.pieces==cross.pieces,"failed multiple removal unchanged");
+    Factory colored=cross;
+    Add(colored,Kind::Supply,Neighbor(ParseCell("C3"),3),1);
+    Add(colored,Kind::Supply,Neighbor(ParseCell("C3"),4),2);
+    Add(colored,Kind::Supply,Neighbor(ParseCell("C3"),2),4);
+    auto liquid=PipeLiquidColors(colored);
+    Check(liquid.at(1)==1 && liquid.at(2)==2 && liquid.at(3)==4,"crossing pipes keep independent liquid colors");
+    colored.LayPath({ParseCell("C3"),ParseCell("D3"),ParseCell("E3")});
+    Check(PipeLiquidColors(colored).at(colored.pieces.back().id)==1,"liquid color propagates through connected pipes");
+    const auto colored_picture=FactoryHtml(colored);
+    for(int color:{1,2,4}) Check(colored_picture.find(std::string("fill=\"")+LiquidColor(color)+"\"")!=std::string::npos,"label follows determined liquid color");
+    Factory mixed=cross;
+    Add(mixed,Kind::Supply,ParseCell("B3"),1); Add(mixed,Kind::Supply,ParseCell("D3"),8);
+    Check(PipeLiquidColors(mixed).at(1)==0,"incompatible liquid network stays neutral");
+    Check(PipeLiquidColors(cross).at(1)==0,"unconnected pipe stays neutral");
     Check(cross_picture.find("component-labels")>cross_picture.rfind("<line "),"crossing labels drawn after all pipes");
-    for(const std::string color:{"#2583b9","#c45492","#ac7814"})
+    for(const std::string color:{"#85939d","#bec6cb","#65727e"})
         Check(cross_picture.find("fill=\""+color+"\"")!=std::string::npos,"each crossing label uses matching pipe color");
     for(const std::string alias:{"拆","拆除","移除","删","删除"}) {
         Draft removal; removal.factory=cross;
