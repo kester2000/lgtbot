@@ -85,7 +85,6 @@ class RoundStage : public SubGameStage<> {
         }
         return "";
     }
-    bool AnnounceStageBegin() const override { return phase_ != ff::Phase::Select; }
     void OnStageBegin() override {
         auto& m = Main().match;
         if (phase_ == ff::Phase::Ready) {
