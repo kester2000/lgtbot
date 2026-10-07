@@ -35,11 +35,13 @@ class Match {
     std::mt19937 rng;
 
     Match(int count, const std::string& seed) : players(count), rng(MakeRng(seed)) {
-        Require(count >= 2 && count <= 6, "需要 2 至 6 人");
+        Require(count >= 1 && count <= 6, "需要 1 至 6 人");
         std::vector<int> deck(48); std::iota(deck.begin(), deck.end(), 1); SeededShuffle(deck.begin(), deck.end(), rng);
         for (int i = 0; i < count; ++i) { players[i].deck.assign(deck.begin() + 8*i, deck.begin() + 8*i + 8); players[i].draft.factory.skin = 0; }
         OpenRound();
     }
+    // The mode depends on the initial player count, not on how many remain.
+    bool Solo() const { return players.size() == 1; }
     void OpenRound() {
         market.clear(); claim_count = 0; round_players = 0; phase = Phase::Ready;
         for (auto& p : players) if (!p.left) {
@@ -50,6 +52,10 @@ class Match {
             p.draft.factory.current = 0; p.draft.factory.round = round; p.draft.undo.clear(); p.draft.redo.clear();
         }
         if (!round_players) phase = Phase::Over;
+        else if (Solo()) {
+            Assign(0,0,true);
+            phase = Phase::Build;
+        }
     }
     bool All(const std::function<bool(const Player&)>& pred) const {
         return std::ranges::all_of(players, [&](auto& p) { return p.left || pred(p); });

@@ -20,7 +20,35 @@ GAME_TEST(2, convenient_construction_commands) {
     ASSERT_PRI_MSG(OK,0,"撤销"); ASSERT_PRI_MSG(OK,0,"检查");
     ASSERT_PRI_MSG(OK,1,"连续画线 A3B3C3"); ASSERT_PRI_MSG(OK,1,"拆除 B3");
 }
-GAME_TEST(1, insufficient_players) { ASSERT_FALSE(StartGame()); }
+GAME_TEST(0, insufficient_players) { ASSERT_FALSE(StartGame()); }
+GAME_TEST(1, solo_eight_rounds) {
+    ASSERT_PUB_MSG(OK,0,"单机"); START_GAME();
+    ASSERT_PUB_MSG(OK,0,"操作"); ASSERT_PUB_MSG(OK,0,"牌池");
+    for (int round=1; round<=8; ++round) {
+        ASSERT_PUB_MSG(FAILED,0,"抢 1"); ASSERT_PUB_MSG(FAILED,0,"不抢");
+        ASSERT_PRI_MSG(FAILED,0,"提交"); ASSERT_PRI_MSG(FAILED,0,"保留");
+        ASSERT_PRI_MSG(OK,0,"白 A3");
+        ASSERT_TIMEOUT(CONTINUE); // No timer should advance a solo round.
+        ASSERT_PRI_MSG(OK,0,"撤销"); ASSERT_PRI_MSG(OK,0,"重做");
+        ASSERT_PRI_MSG(CHECKOUT,0,"跳过");
+        ASSERT_SCORE(10); ASSERT_FINISHED(round==8);
+    }
+}
+GAME_TEST(1, solo_build_and_keep_previous_factory) {
+    ASSERT_PUB_MSG(OK,0,"种子 solo-build"); START_GAME();
+    namespace ff = ::factory_funner;
+    ff::Match reference(1,"solo-build");
+    auto& draft=reference.players[0].draft;
+    draft.Apply(ff::Words("机 C4")); draft.Apply(ff::Words("自动"));
+    ASSERT_TRUE(draft.factory.Validate().Valid());
+    const int expected=10+ff::MachineById(draft.factory.current).revenue-draft.factory.Cost();
+    ASSERT_PRI_MSG(OK,0,"机 C4"); ASSERT_PRI_MSG(OK,0,"自动");
+    ASSERT_PUB_MSG(OK,0,"赛况"); ASSERT_PRI_MSG(CHECKOUT,0,"提交");
+    ASSERT_SCORE(expected);
+    ASSERT_PRI_MSG(FAILED,0,"拆除 C4"); ASSERT_PRI_MSG(FAILED,0,"撤销");
+    for (int round=2; round<=8; ++round) ASSERT_PRI_MSG(CHECKOUT,0,"跳过");
+    ASSERT_FINISHED(true); ASSERT_SCORE(expected);
+}
 GAME_TEST(7, too_many_players) { ASSERT_FALSE(StartGame()); }
 GAME_TEST(6, each_player_picture_commands) {
     START_GAME();

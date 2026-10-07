@@ -7,17 +7,23 @@ namespace lgtbot::game::GAME_MODULE_NAME {
 namespace ff = ::factory_funner;
 const GameProperties k_properties {
     .name_ = "工厂欢乐多",
-    .developer_ = "LGTBot / FactoryFunner 移植",
-    .description_ = "抢选机器、连接六角管道，经营自己的工厂（Factory Funner，2–6人）",
+    .developer_ = "宽容",
+    .description_ = "抢选机器、连接六角管道，经营自己的工厂（Factory Funner，1–6人，支持单机）",
     .shuffled_player_id_ = true,
 };
 uint64_t MaxPlayerNum(const CustomOptions&) { return 6; }
-uint32_t Multiple(const CustomOptions& options) { return GET_OPTION_VALUE(options, 种子).empty() ? 2 : 0; }
+uint32_t Multiple(const CustomOptions&) { return 0; }
 const MutableGenericOptions k_default_generic_options;
 const std::vector<RuleCommand> k_rule_commands = {};
-const std::vector<InitOptionsCommand> k_init_options_commands = {};
+const std::vector<InitOptionsCommand> k_init_options_commands = {
+    InitOptionsCommand("独自经营工厂，八轮无时限挑战",
+        [](CustomOptions&, MutableGenericOptions& options) {
+            options.bench_computers_to_player_num_ = 1;
+            return NewGameMode::SINGLE_USER;
+        }, VoidChecker("单机")),
+};
 bool AdaptOptions(MsgSenderBase& reply, CustomOptions&, const GenericOptions& options, MutableGenericOptions&) {
-    if (options.PlayerNum() < 2 || options.PlayerNum() > 6) { reply() << "工厂欢乐多需要 2 至 6 人"; return false; }
+    if (options.PlayerNum() < 1 || options.PlayerNum() > 6) { reply() << "工厂欢乐多需要 1 至 6 人"; return false; }
     return true;
 }
 
@@ -54,7 +60,7 @@ class MainStage : public StageFsm<void, RoundStage> {
             factories.emplace_back(std::move(name),std::move(factory));
             estimates.push_back(std::move(estimate));
         }
-        return Markdown(ff::FactoriesHtml(factories,Global().ResourceDir(),estimates),1280);
+        return Markdown(ff::FactoriesHtml(factories,Global().ResourceDir(),estimates),match.Solo() ? 660 : 1280);
     }
     std::string Scores() const {
         std::ostringstream s;
@@ -89,17 +95,24 @@ class RoundStage : public SubGameStage<> {
         auto& m = Main().match;
         if (phase_ == ff::Phase::Ready) {
             Global().StartTimer(10);
-            Global().Boardcast() << "10 秒后自动翻牌，进入抢选阶段。发送 操作 查看指令。";
-            if (m.round == 1) Global().Boardcast() << Main().OverviewPicture();
+            auto message=Global().Boardcast();
+            message << "10 秒后自动翻牌，进入抢选阶段。发送 操作 查看指令。";
+            if (m.round == 1) message << Main().OverviewPicture();
         } else if (phase_ == ff::Phase::Select) {
             Global().StartTimer(GAME_OPTION(选机时限));
             Global().Boardcast() << "【当前阶段】第" << m.round << "轮 · 抢选机器\n" << Market()
                 << "\n抢选时间 " << GAME_OPTION(选机时限) << " 秒。发送 抢 序号 或 不抢；按机器人收到指令的先后判定。最后一位自动领取剩余机器，超时随机分配。\n"
                 << Markdown(MarketHtml(),1000);
         } else if (phase_ == ff::Phase::Build) {
-            Global().StartTimer(GAME_OPTION(施工时限));
-            Global().Boardcast() << "选机完成，开始施工。可私聊发送施工指令；发送 工厂 查看图，文字 查看端口，检查 校验，提交 或 跳过 锁定。";
-            Global().Boardcast() << Main().OverviewPicture();
+            auto message=Global().Boardcast();
+            if (m.Solo()) {
+                message << "【单机模式】第" << m.round << "/8 轮，已领取机器 M" << m.players[0].draft.factory.current
+                    << "。施工无时间限制；提交 后立即结算，跳过 免费弃建并进入下一轮。发送 操作 查看指令。";
+            } else {
+                Global().StartTimer(GAME_OPTION(施工时限));
+                message << "选机完成，开始施工。可私聊发送施工指令；发送 工厂 查看图，文字 查看端口，检查 校验，提交 或 跳过 锁定。";
+            }
+            message << Main().OverviewPicture();
         } else {
             Global().StartTimer(20);
             Global().Boardcast() << "施工时间到，未提交的有效草稿已冻结。相关玩家有 20 秒发送 保留 或 跳过；不回应则跳过。无效草稿已自动跳过。";
@@ -109,6 +122,7 @@ class RoundStage : public SubGameStage<> {
     }
     CheckoutErrCode OnStageTimeout() override {
         auto& m = Main().match;
+        if (m.Solo()) return StageErrCode::CONTINUE;
         if (phase_ == ff::Phase::Select) m.Resolve(true);
         if (phase_ == ff::Phase::Build) m.BuildTimeout();
         if (phase_ == ff::Phase::Decision) m.DecisionTimeout();
@@ -140,7 +154,8 @@ class RoundStage : public SubGameStage<> {
     }
     std::string MarketHtml() const {
         std::ostringstream s;
-        s << "<h3>第 " << Main().match.round << " 轮 · 牌池（发送 抢 序号）</h3><table cellpadding=\"12\"><tr>";
+        s << "<h3>第 " << Main().match.round << " 轮 · "
+          << (Main().match.Solo() ? "本轮机器" : "牌池（发送 抢 序号）") << "</h3><table cellpadding=\"12\"><tr>";
         size_t i = 0;
         for (const auto& c : Main().match.market) {
             if (i == 3) s << "</tr><tr>";
@@ -181,9 +196,9 @@ class RoundStage : public SubGameStage<> {
                 count(1); auto message=reply();
                 message << "【当前阶段】第" << m.round << "轮 · " << PhaseName(phase_) << "\n" << Main().Scores();
                 if(phase_==ff::Phase::Select) message << Markdown(MarketHtml(),1000);
-                else message << Main().OverviewPicture(phase_==ff::Phase::Build || phase_==ff::Phase::Decision);
+                else message << Main().OverviewPicture(!m.Solo() && (phase_==ff::Phase::Build || phase_==ff::Phase::Decision));
             }
-            else if (cmd == "牌池") { count(1); reply() << Market(); if (phase_ != ff::Phase::Ready) reply() << Markdown(MarketHtml(),1000); }
+            else if (cmd == "牌池") { count(1); auto message=reply(); message << Market(); if (phase_ != ff::Phase::Ready) message << Markdown(MarketHtml(),1000); }
             else if (cmd == "工厂") { count(1); reply() << FactoryPicture(pid); }
             else if (cmd == "文字") { count(1); reply() << ff::FactoryText(p.draft.factory); }
             else if (cmd == "检查") { count(1); reply() << p.draft.factory.Validate().Text() << "\n待付 $" << p.draft.factory.Cost() << (p.draft.factory.HasCurrent() ? "" : "\n尚未安装本轮机器，不能提交"); }
@@ -197,24 +212,26 @@ class RoundStage : public SubGameStage<> {
                     std::vector<int> previously_selected;
                     for(const auto& player:m.players) previously_selected.push_back(player.draft.factory.current);
                     count(2); m.Claim(pid,ff::Number(a[1],1,6));
-                    Global().Boardcast() << Global().PlayerName(pid) << "选中 M" << p.draft.factory.current;
+                    auto message=Global().Boardcast();
+                    message << Global().PlayerName(pid) << "选中 M" << p.draft.factory.current;
                     for(size_t i=0;i<m.players.size();++i) if(i!=pid && !previously_selected[i] && m.players[i].draft.factory.current)
-                        Global().Boardcast() << Global().PlayerName(i) << "自动领取最后一台机器 M" << m.players[i].draft.factory.current;
+                        message << "\n" << Global().PlayerName(i) << "自动领取最后一台机器 M" << m.players[i].draft.factory.current;
                 } else if (cmd == "不抢") { count(1); m.Pass(pid); reply() << "已选择不主动抢选"; }
                 else if (cmd == "提交" || cmd == "保留" || cmd == "跳过") {
                     count(1); ff::Require(cmd != "保留" || phase_ == ff::Phase::Decision, "保留仅用于超时确认");
-                    m.Submit(pid,cmd == "跳过"); reply() << "已锁定，等待其他玩家完成后统一结算";
+                    m.Submit(pid,cmd == "跳过"); reply() << (m.Solo() ? "已确认，立即结算本轮" : "已锁定，等待其他玩家完成后统一结算");
                 } else {
                     ff::Require(phase_ == ff::Phase::Build && !p.submitted, "仅施工阶段且尚未提交时可以修改");
                     const auto before = p.draft.factory.pieces.size();
                     p.draft.Apply(a);
+                    auto message=reply();
                     if (cmd == "自动") {
-                        reply() << "自动补入 " << p.draft.factory.pieces.size() - before << " 个罐，待付 $" << p.draft.factory.Cost()
+                        message << "自动补入 " << p.draft.factory.pieces.size() - before << " 个罐，待付 $" << p.draft.factory.Cost()
                             << "。可 撤销。\n" << p.draft.factory.Validate().Text();
                     } else {
-                        reply() << "施工稿已更新，待付 $" << p.draft.factory.Cost() << "。发送 工厂 / 文字 / 检查 查看；可 撤销。";
+                        message << "施工稿已更新，待付 $" << p.draft.factory.Cost() << "。发送 工厂 / 文字 / 检查 查看；可 撤销。";
                     }
-                    reply() << FactoryPicture(pid);
+                    message << FactoryPicture(pid);
                 }
                 SyncReady();
             }
@@ -223,17 +240,20 @@ class RoundStage : public SubGameStage<> {
     }
 };
 
-void MainStage::FirstStageFsm(SubStageFsmSetter setter) { setter.Emplace<RoundStage>(*this,ff::Phase::Ready); }
+void MainStage::FirstStageFsm(SubStageFsmSetter setter) { setter.Emplace<RoundStage>(*this,match.phase); }
 void MainStage::NextStageFsm(RoundStage&, CheckoutReason, SubStageFsmSetter setter) {
     if (match.All([](const auto&) { return false; })) { match.Commit(); match.phase = ff::Phase::Over; Global().Boardcast() << "所有玩家均已退出，游戏结束。\n" << Scores(); return; }
     if (match.phase == ff::Phase::Ready) setter.Emplace<RoundStage>(*this,ff::Phase::Select);
     else if (match.phase == ff::Phase::Select) setter.Emplace<RoundStage>(*this,ff::Phase::Build);
     else if (match.phase == ff::Phase::Build && !match.All([](auto& p) { return p.submitted; })) setter.Emplace<RoundStage>(*this,ff::Phase::Decision);
     else {
-        match.Commit(); Global().Boardcast() << "本轮统一结算：\n" << Scores();
-        Global().Boardcast() << OverviewPicture();
-        if (match.round == 8) { match.phase = ff::Phase::Over; Global().Boardcast() << "八轮结束，按资金加连锁奖励排名，同分并列。"; }
-        else { ++match.round; match.OpenRound(); setter.Emplace<RoundStage>(*this,ff::Phase::Ready); }
+        match.Commit(); Global().Boardcast() << "本轮统一结算：\n" << Scores() << OverviewPicture();
+        if (match.round == 8) {
+            match.phase = ff::Phase::Over;
+            if (match.Solo()) Global().Boardcast() << "单机挑战完成！最终得分为资金加连锁奖励。\n" << Scores();
+            else Global().Boardcast() << "八轮结束，按资金加连锁奖励排名，同分并列。";
+        }
+        else { ++match.round; match.OpenRound(); setter.Emplace<RoundStage>(*this,match.phase); }
     }
 }
 auto* MakeMainStage(MainStageFactory factory) { return factory.Create<MainStage>(); }

@@ -200,6 +200,28 @@ static void Tests() {
     Check(cycle.Validate().Valid(),"broken feedback with crossing is valid");
     Check(cycle.Validate().bonus > 0,"chain bonus retained");
 
+    Match solo(1,"solo"), same_solo(1,"solo"); std::set<int> solo_cards;
+    Check(solo.Solo() && solo.players[0].deck==same_solo.players[0].deck,"solo seeded deck reproducible");
+    for (int round=1; round<=8; ++round) {
+        const auto& p=solo.players[0];
+        Check(solo.phase==Phase::Build && solo.market.size()==1 && solo.market[0].owner==0,"solo directly enters construction");
+        Check(p.draft.factory.current==p.deck[round-1] && solo_cards.insert(p.draft.factory.current).second,"solo receives eight distinct cards in order");
+        Check(!p.selection.first && !p.selection.last && p.selection.free_discard,"solo has no selection fees or rewards");
+        solo.players[0].draft.Apply(Words("白 A3"));
+        solo.Submit(0,true); solo.Commit();
+        Check(solo.Score(0)==10 && solo.players[0].draft.factory.pieces.empty(),"solo skips roll back construction for free");
+        if (round<8) { ++solo.round; solo.OpenRound(); }
+    }
+    Match solo_build(1,"solo-build"); solo_build.players[0].draft.factory=Simple();
+    solo_build.Submit(0,false); solo_build.Commit();
+    Check(solo_build.Score(0)==15,"solo build charges parts without selection adjustments");
+    ++solo_build.round; solo_build.OpenRound();
+    Check(solo_build.players[0].draft.factory.pieces.size()==3,"solo retains previous factory");
+    solo_build.Submit(0,true); solo_build.Commit();
+    Check(solo_build.Score(0)==15,"solo later skip preserves previous income");
+    Match remaining(2,"remaining"); remaining.Leave(1); ++remaining.round; remaining.OpenRound();
+    Check(!remaining.Solo() && remaining.phase==Phase::Ready,"multiplayer does not become solo when others leave");
+
     Match m(6,"test"); std::set<int> cards;
     for (auto& p : m.players) for (int card : p.deck) Check(cards.insert(card).second,"48 unique dealt cards");
     for (int round = 1; round <= 8; ++round) {
