@@ -27,6 +27,75 @@ static void Add(Factory& f, Kind kind, Cell c, int value = 0) {
 }
 static void Tests() {
     {
+        Draft short_machine, full_machine;
+        short_machine.factory.current = full_machine.factory.current = 41;
+        short_machine.Apply(Words("b4")); full_machine.Apply(Words("机 B4"));
+        Check(short_machine.factory.pieces == full_machine.factory.pieces,"bare coordinate places machine");
+        short_machine.Apply(Words("旋3")); full_machine.Apply(Words("旋转 B4 3"));
+        Check(short_machine.factory.pieces == full_machine.factory.pieces,"short rotation counts turns not component ID");
+        short_machine.Apply(Words("旋 2")); short_machine.Apply(Words("旋"));
+        Check(short_machine.factory.pieces[0].rot == 0,"spaced and default short rotation");
+        short_machine.Apply(Words("撤销")); Check(short_machine.factory.pieces[0].rot == 5,"short rotation undo");
+        short_machine.Apply(Words("重做")); Check(short_machine.factory.pieces[0].rot == 0,"short rotation redo");
+        short_machine.Apply(Words("r3"));
+        Check(short_machine.factory.pieces == full_machine.factory.pieces,"English rotation alias matches Chinese shortcut");
+        Draft english_batch, chinese_batch;
+        english_batch.factory.current = chinese_batch.factory.current = 41;
+        english_batch.Apply(Words("c4 r3 auto")); chinese_batch.Apply(Words("c4 旋3 自动"));
+        Check(english_batch.factory.pieces == chinese_batch.factory.pieces,"English aliases work in batch");
+        english_batch.Apply(Words("撤销")); Check(english_batch.factory.pieces.empty(),"English batch undone together");
+        english_batch.Apply(Words("重做")); Check(english_batch.factory.pieces == chinese_batch.factory.pieces,"English batch redone together");
+        english_batch.Apply(Words("连 a1b1c1 r2 auto")); chinese_batch.Apply(Words("连 a1b1c1 旋2 自动"));
+        Check(english_batch.factory.pieces == chinese_batch.factory.pieces,"path stops before English rotation");
+        english_batch.Apply(Words("拆 b1 r1")); chinese_batch.Apply(Words("拆 b1 旋1"));
+        Check(english_batch.factory.pieces == chinese_batch.factory.pieces,"removal stops before English rotation");
+        const auto english_before = english_batch.factory.pieces;
+        Throws([&] { english_batch.Apply(Words("r3 auto 黑 D4")); },"failed English batch rejected");
+        Check(english_batch.factory.pieces == english_before,"failed English batch rolls back");
+        for (const std::string command : {"旋0","旋61","旋-1","旋999999999","r0","r61","r-1","r999999999","旋转","h1","a0","a10"}) {
+            const auto pieces = short_machine.factory.pieces;
+            const auto undo_size = short_machine.undo.size();
+            Throws([&] { short_machine.Apply(Words(command)); },"invalid shortcut rejected");
+            Check(short_machine.factory.pieces == pieces && short_machine.undo.size() == undo_size,"invalid shortcut leaves history intact");
+        }
+        Draft missing;
+        Throws([&] { missing.Apply(Words("旋3")); },"rotation requires current machine");
+        missing.factory = short_machine.factory; ++missing.factory.round; missing.factory.current = 6;
+        Throws([&] { missing.Apply(Words("旋3")); },"rotation shortcut cannot rotate old machine");
+        Draft short_path, full_path;
+        short_path.Apply(Words("a1B1c1")); full_path.Apply(Words("连 A1B1C1"));
+        Check(short_path.factory.pieces == full_path.factory.pieces,"bare mixed-case path matches explicit path");
+        const auto path_before = short_path.factory.pieces;
+        Throws([&] { short_path.Apply(Words("a1c1e1")); },"nonadjacent short path rejected");
+        Check(short_path.factory.pieces == path_before,"failed short path unchanged");
+        for (const std::string commands : {"c4 绿 B3 黑 C5 旋转 C5 逆时针 2", "c4;绿 B3；黑 C5;旋转 C5 逆时针 2;",
+                "c4\n绿 B3\n黑 C5\n旋转 C5 逆时针 2", "方案 c4 绿 B3 黑 C5 旋转 C5 逆时针 2"}) {
+            Draft batch; batch.factory.current = 41;
+            batch.Apply(Words(commands));
+            Check(batch.factory.pieces == Simple().pieces && batch.factory.Validate().Valid(),"mixed batch builds expected valid factory");
+            Check(batch.undo.size() == 1,"batch creates one undo entry");
+            const auto built = batch.factory.pieces;
+            batch.Apply(Words("撤销")); Check(batch.factory.pieces.empty(),"whole implicit batch undone");
+            Throws([&] { batch.Apply(Words("c4 旋3 黑 D4")); },"invalid final step rejects whole batch");
+            Check(batch.factory.pieces.empty() && batch.undo.empty() && batch.redo.size() == 1,"failed batch preserves undo and redo");
+            batch.Apply(Words("重做")); Check(batch.factory.pieces == built,"redo preserved after failure");
+        }
+        Draft mixed; mixed.factory.current = 41;
+        mixed.Apply(Words("c4 旋3 a1b1c1 黑 C5 旋转 C5 逆时针 2"));
+        Check(mixed.factory.pieces.size() == 3 && mixed.factory.Get(1).rot == 3,"shortcut commands mixed in one message");
+        mixed.Apply(Words("拆 B1 C5; 机 B4 旋2"));
+        Check(mixed.factory.pieces.size() == 1 && mixed.factory.pieces[0].cell == ParseCell("B4") && mixed.factory.pieces[0].rot == 5,"multiple removal followed by placement and rotation");
+        mixed.Apply(Words("连 A1 B1 C1 黑 C5"));
+        Check(mixed.factory.pieces.size() == 3,"explicit spaced path stops at next command");
+        for (const std::string command : {"c4 提交", "c4 撤销", "方案 c4;方案 自动", "c4;;自动"})
+            Throws([&] { mixed.Apply(Words(command)); },"draft batches reject non-construction and empty steps");
+        std::string many;
+        for (int i=0;i<64;++i) many += "自动 ";
+        missing.Apply(Words(many));
+        Throws([&] { missing.Apply(Words(many + "自动")); },"batch step limit");
+        Throws([&] { missing.Apply({std::string(8193,'x')}); },"batch length limit");
+    }
+    {
         Draft draft; draft.factory.current = 41;
         draft.Apply(Words("机 C4")); draft.Apply(Words("自动"));
         Check(draft.factory.pieces.size() == 3,"only needed green and black tanks");

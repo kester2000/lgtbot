@@ -426,8 +426,72 @@ inline std::vector<Cell> PathCells(const std::vector<std::string>& a) {
     }
     Require(cells.size() >= 2 && cells.size() <= 45,"连续画线需要 2 至 45 个相邻坐标"); return cells;
 }
-inline void Edit(Factory& f, const std::vector<std::string>& a) {
+inline bool CoordinateSequence(const std::string& text) {
+    if (text.empty() || text.size() % 2) return false;
+    for (size_t i = 0; i < text.size(); i += 2)
+        if (!((text[i] >= 'a' && text[i] <= 'g') || (text[i] >= 'A' && text[i] <= 'G')) ||
+            text[i + 1] < '0' || text[i + 1] > '9') return false;
+    return true;
+}
+inline bool PathCommand(const std::string& cmd) {
+    return cmd == "连" || cmd == "画线" || cmd == "连续画线" || cmd == "连线" || cmd == "画管";
+}
+inline bool RemoveCommand(const std::string& cmd) {
+    return cmd == "拆" || cmd == "拆除" || cmd == "移除" || cmd == "删" || cmd == "删除";
+}
+// Fixed-arity commands can follow each other with spaces. Variable-arity paths
+// and removals consume their targets; a semicolon explicitly ends either one.
+inline std::vector<std::vector<std::string>> ConstructionCommands(const std::vector<std::string>& args) {
+    std::string text;
+    for (const auto& arg : args) { text += arg; text += ' '; }
+    Require(text.size() <= 8192, "一条施工消息最多 8192 字节");
+    for (size_t at = 0; (at = text.find("；", at)) != std::string::npos;)
+        text.replace(at, std::string("；").size(), ";");
+    std::istringstream in(text);
+    std::vector<std::vector<std::string>> commands;
+    for (std::string line; std::getline(in, line, ';');) {
+        auto words = Words(line);
+        if (words.empty() && in.eof() && !commands.empty()) break;
+        Require(!words.empty(), "施工步骤不能为空");
+        for (size_t i = 0; i < words.size();) {
+            const size_t start = i++;
+            const auto& cmd = words[start];
+            size_t required = 0;
+            if (cmd == "机" || cmd == "粉" || cmd == "黄" || cmd == "绿" || cmd == "蓝" ||
+                cmd == "白" || cmd == "黑" || cmd == "转" || cmd == "旋转" || cmd == "翻" || cmd == "翻转") required = 1;
+            else if (cmd == "管" || cmd == "移" || cmd == "移动") required = 2;
+            Require(words.size() - i >= required, "参数数量不正确，请发送 操作");
+            i += required;
+            if (cmd == "转" || cmd == "旋转" || cmd == "旋") {
+                const size_t max_options = cmd == "旋" ? 1 : 2;
+                for (size_t n = 0; n < max_options && i < words.size(); ++n) {
+                    const auto& option = words[i];
+                    if ((cmd != "旋" && (option == "顺时针" || option == "逆时针")) ||
+                        std::ranges::all_of(option, [](unsigned char c) { return std::isdigit(c); })) ++i;
+                    else break;
+                }
+            } else if (PathCommand(cmd) || RemoveCommand(cmd)) {
+                while (i < words.size()) {
+                    const auto& target = words[i];
+                    if (CoordinateSequence(target) ||
+                        (PathCommand(cmd) && (target.find_first_of(",->") != std::string::npos ||
+                            target.find("→") != std::string::npos || target.find("，") != std::string::npos || target.find("、") != std::string::npos)) ||
+                        (RemoveCommand(cmd) && (target.starts_with('#') || std::isdigit(static_cast<unsigned char>(target[0]))))) ++i;
+                    else break;
+                }
+            }
+            Require(commands.size() < 64, "一条施工消息最多 64 步");
+            commands.emplace_back(words.begin() + start, words.begin() + i);
+        }
+    }
+    Require(!commands.empty(), "请输入施工指令");
+    return commands;
+}
+inline void Edit(Factory& f, std::vector<std::string> a) {
     Require(!a.empty(), "请输入施工指令");
+    if (a[0] == "auto") a[0] = "自动";
+    if (a[0].starts_with('r') && a[0].size() > 1) a[0] = "旋" + a[0].substr(1);
+    if (CoordinateSequence(a[0])) a.insert(a.begin(), a[0].size() == 2 ? "机" : "连");
     auto count = [&](size_t lo, size_t hi) { Require(a.size() >= lo && a.size() <= hi, "参数数量不正确，请发送 操作"); };
     const bool tank = a[0] == "粉" || a[0] == "黄" || a[0] == "绿" || a[0] == "蓝" || a[0] == "白" || a[0] == "黑";
     if (a[0] == "机" || tank || a[0] == "管") {
@@ -446,7 +510,7 @@ inline void Edit(Factory& f, const std::vector<std::string>& a) {
         f.Put(p);
     } else if (a[0] == "自动") {
         count(1,1); AutoTanks(f);
-    } else if (a[0] == "连" || a[0] == "画线" || a[0] == "连续画线" || a[0] == "连线" || a[0] == "画管") {
+    } else if (PathCommand(a[0])) {
         f.LayPath(PathCells(a));
     } else if (a[0] == "移" || a[0] == "移动") { count(3,3); f.Move(Component(f,a[1]), ParseCell(a[2])); }
     else if (a[0] == "转" || a[0] == "旋转") {
@@ -459,8 +523,17 @@ inline void Edit(Factory& f, const std::vector<std::string>& a) {
         const int id=Component(f,a[1]);
         for(int i=0;i<times;++i) f.Rotate(id,steps);
     }
+    else if (a[0].starts_with("旋")) {
+        int times = 1;
+        if (a[0] == "旋") { count(1,2); if (a.size() == 2) times = Number(a[1],1,60); }
+        else { count(1,1); times = Number(a[0].substr(std::string("旋").size()),1,60); }
+        const auto machine = std::ranges::find_if(f.pieces, [&](const auto& p) { return p.kind == Kind::Machine && p.round == f.round && p.machine == f.current; });
+        Require(machine != f.pieces.end(), "请先放置本轮机器，再使用旋转简写");
+        const int id = machine->id;
+        for (int i = 0; i < times; ++i) f.Rotate(id,1);
+    }
     else if (a[0] == "翻" || a[0] == "翻转") { count(2,2); f.Flip(Component(f,a[1])); }
-    else if (a[0] == "拆" || a[0] == "拆除" || a[0] == "移除" || a[0] == "删" || a[0] == "删除") {
+    else if (RemoveCommand(a[0])) {
         count(2,65);
         std::set<int> ids;
         for(size_t i=1;i<a.size();++i) { const int id=Component(f,a[i]); f.Editable(f.Get(id)); ids.insert(id); }
@@ -482,19 +555,13 @@ struct Draft {
             Require(!from.empty(), "没有可撤销或重做的操作");
             to.push_back(factory); factory = from.back(); from.pop_back(); return;
         }
+        const auto commands = ConstructionCommands(a[0] == "方案" ? std::vector<std::string>(a.begin() + 1, a.end()) : a);
+        ApplyCommands(commands);
+    }
+    void ApplyCommands(const std::vector<std::vector<std::string>>& commands) {
+        Require(!commands.empty(), "请输入施工指令");
         Factory next = factory;
-        if (a[0] == "方案") {
-            std::string plan;
-            for (size_t i = 1; i < a.size(); ++i) { if (i > 1) plan += ' '; plan += a[i]; }
-            // Accept the full-width semicolon commonly entered on Chinese phones.
-            for (size_t at = 0; (at = plan.find("；", at)) != std::string::npos;) plan.replace(at, std::string("；").size(), ";");
-            Require(!plan.empty() && plan.size() <= 8192, "方案为空或过长");
-            std::istringstream in(plan); int steps = 0;
-            for (std::string line; std::getline(in,line,';');) {
-                Require(++steps <= 64, "一条方案最多 64 步");
-                Edit(next,Words(line));
-            }
-        } else Edit(next, a);
+        for (const auto& command : commands) Edit(next, command);
         if (undo.size() == 100) undo.erase(undo.begin());
         undo.push_back(factory); redo.clear(); factory = std::move(next);
     }

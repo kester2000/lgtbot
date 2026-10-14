@@ -16,7 +16,7 @@ uint32_t Multiple(const CustomOptions&) { return 0; }
 const MutableGenericOptions k_default_generic_options;
 const std::vector<RuleCommand> k_rule_commands = {};
 const std::vector<InitOptionsCommand> k_init_options_commands = {
-    InitOptionsCommand("独自经营工厂，八轮无时限挑战",
+    InitOptionsCommand("独自经营工厂，八轮挑战，每轮施工限时一小时",
         [](CustomOptions&, MutableGenericOptions& options) {
             options.bench_computers_to_player_num_ = 1;
             return NewGameMode::SINGLE_USER;
@@ -106,8 +106,9 @@ class RoundStage : public SubGameStage<> {
         } else if (phase_ == ff::Phase::Build) {
             auto message=Global().Boardcast();
             if (m.Solo()) {
+                Global().StartTimer(3600);
                 message << "【单机模式】第" << m.round << "/8 轮，已领取机器 M" << m.players[0].draft.factory.current
-                    << "。施工无时间限制；提交 后立即结算，跳过 免费弃建并进入下一轮。发送 操作 查看指令。";
+                    << "。每轮施工限时一小时；提交 后立即结算，跳过 免费弃建并进入下一轮。超时有效草稿冻结并有20秒确认保留，否则免费跳过。发送 操作 查看指令。";
             } else {
                 Global().StartTimer(GAME_OPTION(施工时限));
                 message << "选机完成，开始施工。可私聊发送施工指令；发送 工厂 查看图，文字 查看端口，检查 校验，提交 或 跳过 锁定。";
@@ -122,7 +123,6 @@ class RoundStage : public SubGameStage<> {
     }
     CheckoutErrCode OnStageTimeout() override {
         auto& m = Main().match;
-        if (m.Solo()) return StageErrCode::CONTINUE;
         if (phase_ == ff::Phase::Select) m.Resolve(true);
         if (phase_ == ff::Phase::Build) m.BuildTimeout();
         if (phase_ == ff::Phase::Decision) m.DecisionTimeout();
@@ -185,6 +185,9 @@ class RoundStage : public SubGameStage<> {
         }
         return s.str();
     }
+    static bool SubmitCommand(const std::string& cmd) {
+        return cmd == "提交" || cmd == "commit" || cmd == "cm";
+    }
     AtomReqErrCode Command(PlayerID pid, bool, MsgSenderBase& reply, const std::vector<std::string>& a) {
         try {
             ff::Require(!a.empty(), "发送 操作 查看指令");
@@ -217,15 +220,28 @@ class RoundStage : public SubGameStage<> {
                     for(size_t i=0;i<m.players.size();++i) if(i!=pid && !previously_selected[i] && m.players[i].draft.factory.current)
                         message << "\n" << Global().PlayerName(i) << "自动领取最后一台机器 M" << m.players[i].draft.factory.current;
                 } else if (cmd == "不抢") { count(1); m.Pass(pid); reply() << "已选择不主动抢选"; }
-                else if (cmd == "提交" || cmd == "保留" || cmd == "跳过") {
+                else if (SubmitCommand(cmd) || cmd == "保留" || cmd == "跳过") {
                     count(1); ff::Require(cmd != "保留" || phase_ == ff::Phase::Decision, "保留仅用于超时确认");
                     m.Submit(pid,cmd == "跳过"); reply() << (m.Solo() ? "已确认，立即结算本轮" : "已锁定，等待其他玩家完成后统一结算");
                 } else {
                     ff::Require(phase_ == ff::Phase::Build && !p.submitted, "仅施工阶段且尚未提交时可以修改");
                     const auto before = p.draft.factory.pieces.size();
-                    p.draft.Apply(a);
+                    bool submit = false;
+                    if (cmd == "撤销" || cmd == "重做") p.draft.Apply(a);
+                    else {
+                        auto commands = ff::ConstructionCommands(cmd == "方案" ? std::vector<std::string>(a.begin() + 1, a.end()) : a);
+                        submit = cmd != "方案" && commands.back().size() == 1 && SubmitCommand(commands.back()[0]);
+                        if (submit) commands.pop_back();
+                        auto saved = p;
+                        try {
+                            p.draft.ApplyCommands(commands);
+                            if (submit) m.Submit(pid,false);
+                        } catch (...) { p = std::move(saved); throw; }
+                    }
                     auto message=reply();
-                    if (cmd == "自动") {
+                    if (submit) {
+                        message << (m.Solo() ? "施工并提交成功，立即结算本轮" : "施工并提交成功，已锁定，等待其他玩家完成后统一结算");
+                    } else if ((cmd == "自动" || cmd == "auto") && a.size() == 1) {
                         message << "自动补入 " << p.draft.factory.pieces.size() - before << " 个罐，待付 $" << p.draft.factory.Cost()
                             << "。可 撤销。\n" << p.draft.factory.Validate().Text();
                     } else {
